@@ -1,9 +1,101 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+
+import '../widgets/speaking_orb.dart';
 import 'translation_screen.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final stt.SpeechToText _speech = stt.SpeechToText();
+
+  bool _isListening = false;
+  bool _handoffInProgress = false;
+
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _isListening = false);
+      return;
+    }
+
+    try {
+      final available = await _speech.initialize(
+        onStatus: (status) {
+          if (!mounted) return;
+          if (status == 'done' || status == 'notListening') {
+            setState(() => _isListening = false);
+          }
+        },
+        onError: (error) {
+          if (!mounted) return;
+          setState(() => _isListening = false);
+          _showMessage('Speech recognition error: ${error.errorMsg}');
+        },
+      );
+      if (!available) {
+        if (mounted) {
+          _showMessage('Speech recognition is unavailable on this device.');
+        }
+        return;
+      }
+      if (!mounted) return;
+
+      _handoffInProgress = false;
+      setState(() => _isListening = true);
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: 'en_US',
+          partialResults: true,
+        ),
+        onResult: (result) {
+          final transcript = result.recognizedWords.trim();
+          if (!result.finalResult ||
+              transcript.isEmpty ||
+              _handoffInProgress ||
+              !mounted) {
+            return;
+          }
+
+          _handoffInProgress = true;
+          unawaited(_handoffTranscript(transcript));
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isListening = false);
+      _showMessage('Could not start speech recognition: $error');
+    }
+  }
+
+  Future<void> _handoffTranscript(String transcript) async {
+    try {
+      await _speech.stop();
+    } catch (error) {
+      if (mounted) _showMessage('Could not stop speech recognition: $error');
+    }
+    if (!mounted) return;
+    setState(() => _isListening = false);
+    _openTranslation(context, initialEnglish: transcript);
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  void dispose() {
+    _speech.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,17 +117,20 @@ class HomeScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  _SpeakOrb(
+                  SpeakingOrb(
+                    isListening: _isListening,
                     size: MediaQuery.sizeOf(context).height < 700 ? 180 : 240,
                   ),
                   const SizedBox(height: 32),
-                  const Text(
-                    "Let's Speak English",
+                  Text(
+                    _isListening ? 'Listening...' : "Let's Speak English",
                     style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Your personal AI language partner',
+                    _isListening
+                        ? 'Speak now'
+                        : 'Your personal AI language partner',
                     style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
                   ),
                 ],
@@ -60,10 +155,14 @@ class HomeScreen extends StatelessWidget {
                     },
                   ),
                   FloatingActionButton(
-                    onPressed: () => _openTranslation(context),
-                    backgroundColor: Colors.black,
+                    onPressed: _toggleListening,
+                    backgroundColor: _isListening ? Colors.red : Colors.black,
                     shape: const CircleBorder(),
-                    child: const Icon(Icons.mic, color: Colors.white, size: 30),
+                    child: Icon(
+                      _isListening ? Icons.stop : Icons.mic,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                   ),
                   _BottomAction(
                     icon: Icons.camera_alt,
@@ -79,10 +178,12 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  static void _openTranslation(BuildContext context) {
+  static void _openTranslation(BuildContext context, {String? initialEnglish}) {
     Navigator.push(
       context,
-      MaterialPageRoute<void>(builder: (_) => const TranslationScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) => TranslationScreen(initialEnglish: initialEnglish),
+      ),
     );
   }
 }
@@ -149,7 +250,7 @@ class _TranslateCardState extends State<_TranslateCard> {
                 child: IconButton(
                   tooltip: 'Open conversation',
                   icon: const Icon(Icons.mic, color: Colors.white),
-                  onPressed: () => HomeScreen._openTranslation(context),
+                  onPressed: () => _HomeScreenState._openTranslation(context),
                 ),
               ),
             ],
@@ -169,43 +270,6 @@ class _TranslateCardState extends State<_TranslateCard> {
       child: Text(
         text,
         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-      ),
-    );
-  }
-}
-
-class _SpeakOrb extends StatelessWidget {
-  const _SpeakOrb({required this.size});
-
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          colors: [
-            Colors.black.withValues(alpha: 0.1),
-            Colors.grey.withValues(alpha: 0.3),
-            Colors.transparent,
-          ],
-          stops: const [0.2, 0.6, 1],
-        ),
-      ),
-      child: Center(
-        child: Container(
-          width: 150,
-          height: 150,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(
-              colors: [Colors.black.withValues(alpha: 0.8), Colors.transparent],
-            ),
-          ),
-        ),
       ),
     );
   }

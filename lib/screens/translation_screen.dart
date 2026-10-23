@@ -7,7 +7,9 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:translator/translator.dart';
 
 class TranslationScreen extends StatefulWidget {
-  const TranslationScreen({super.key});
+  const TranslationScreen({super.key, this.initialEnglish});
+
+  final String? initialEnglish;
 
   @override
   State<TranslationScreen> createState() => _TranslationScreenState();
@@ -21,14 +23,22 @@ class _TranslationScreenState extends State<TranslationScreen> {
   bool _isListening = false;
   bool _isTranslating = false;
   bool _speechAvailable = false;
-  String _englishText = 'Hi, how are you?';
-  String _chineseText = '你好，你好吗？';
+  String _englishText = '';
+  String _chineseText = '';
+  Timer? _debounce;
   int _translationRequest = 0;
 
   @override
   void initState() {
     super.initState();
     unawaited(_initializeSpeech());
+    final initialEnglish = widget.initialEnglish?.trim();
+    if (initialEnglish != null && initialEnglish.isNotEmpty) {
+      _englishText = initialEnglish;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_translateText(initialEnglish));
+      });
+    }
   }
 
   Future<void> _speak(String text, String languageCode) async {
@@ -66,7 +76,11 @@ class _TranslationScreenState extends State<TranslationScreen> {
   Future<void> _toggleListening() async {
     if (_isListening) {
       await _speech.stop();
-      if (mounted) setState(() => _isListening = false);
+      if (!mounted) return;
+      setState(() => _isListening = false);
+      _debounce?.cancel();
+      final text = _englishText.trim();
+      if (text.isNotEmpty) unawaited(_translateText(text));
       return;
     }
 
@@ -91,9 +105,17 @@ class _TranslationScreenState extends State<TranslationScreen> {
         ),
         onResult: (result) {
           if (!mounted) return;
+          final text = result.recognizedWords.trim();
           setState(() => _englishText = result.recognizedWords);
-          if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
-            unawaited(_translateText(result.recognizedWords.trim()));
+          _debounce?.cancel();
+          if (text.isEmpty) return;
+
+          if (result.finalResult) {
+            unawaited(_translateText(text));
+          } else {
+            _debounce = Timer(const Duration(milliseconds: 1500), () {
+              if (mounted) unawaited(_translateText(text));
+            });
           }
         },
       );
@@ -132,6 +154,7 @@ class _TranslationScreenState extends State<TranslationScreen> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     unawaited(_speech.cancel());
     unawaited(_flutterTts.stop());
     super.dispose();
